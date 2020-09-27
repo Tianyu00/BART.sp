@@ -1,0 +1,52 @@
+Package: BART.sp
+Type: Package
+Title: Spatially Adjusted Bayesian Additive Regression Trees
+Version: 0.0.0.8999
+Authors@R: c(person("Tianyu", "Zhang", role = c("aut", "cre"),
+            email = "tianyu.zhang.18@gmail.com"),
+        person('Howard', 'H. Chang', role='aut'),
+        person('Robert', 'McCulloch', role='aut'),
+        person('Rodney', 'Sparapani', role='aut'),
+        person('Robert', 'Gramacy', role='aut'),
+        person('Charles', 'Spanbauer', role='aut'),
+        person('Matthew', 'Pratola', role='aut'),
+        person('Martyn', 'Plummer', role='ctb'),
+        person('Nicky', 'Best', role='ctb'),
+        person('Kate', 'Cowles', role='ctb'),
+        person('Karen', 'Vines', role='ctb'))
+Author: Tianyu Zhang [aut, cre],
+  Howard H. Chang [aut],
+  Robert McCulloch [aut],
+  Rodney Sparapani [aut],
+  Robert Gramacy [aut],
+  Charles Spanbauer [aut],
+  Matthew Pratola [aut],
+  Martyn Plummer [ctb],
+  Nicky Best [ctb],
+  Kate Cowles [ctb]
+Maintainer: Tianyu Zhang <tianyu.zhang.18@gmail.com>
+Description: A spatially adjusted Bayesian Additive Regression Trees (BART) model that adds a spatial
+    residual with Matern correlation to the model and fits spatial data better.
+URL: https://github.com/Tianyu00/BART.sp/
+BugReports: https://github.com/Tianyu00/BART.sp/issues/
+License: GPL-3
+Imports: Rcpp (>= 1.0.4.6),
+    Matrix (>= 1.2-18),
+    assertthat (>= 0.2.1),
+    dplyr (>= 1.0.2),
+    fastDummies (>= 1.6.2),
+    fields (>= 11.4)
+LinkingTo: Rcpp, RcppArmadillo, BH
+RoxygenNote: 7.1.1
+Encoding: UTF-8
+Suggests:
+    knitr (>= 1.29),
+    rmarkdown (>= 2.3),
+    ggplot2 (>= 3.3.2),
+    matrixStats (>= 0.56.0),
+    BART (>= 2.7),
+    reshape2 (>= 1.4.4)
+VignetteBuilder: knitr
+NeedsCompilation: yes
+Depends:
+    R (>= 2.10)

@@ -1,0 +1,335 @@
+---
+title: "Spatially Adjusted Bayesian Additive Regression Trees Vignette"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{my-vignette}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+collapse = TRUE,
+comment = "#>"
+)
+```
+
+# Content
+In this vignette, 2 examples are shown to demonstrate the usage of this package.
+
+1. A simulation that demonstrate how to fit the model using `wbart_sp` and
+store the model for prediction use. To do prediction on a new dataset, use 
+S3 method `predict()` on an object of type `wbart_sp` (which is the
+return of function `wbart_sp`. 
+2. An example with real PM$_{2.5}$ data in Southern US. Argument 
+`draw_from_total_distribution` and `block` which control how to draw
+the spatial random effects in the prediction dataset, drawing from the total 
+distribution, or not?
+
+# 1. Simulation
+### Define some functions that will be used later
+
+```{r}
+library(ggplot2)
+library(BART.sp)
+library(matrixStats)
+library(dplyr)
+library(BART)
+library(reshape2)
+
+add_noise_to_the_predicted_value <- function(y_prediction_samples_BART, sigma_vector){
+  ndpost <- dim(y_prediction_samples_BART)[1]
+  n <- dim(y_prediction_samples_BART)[2]
+  sigma <- rep(sigma_vector, each = n)
+  noise <- rnorm(n = length(sigma), sd = sigma_vector)
+  noise <- matrix(noise, nrow = ndpost, byrow = TRUE)
+  return(y_prediction_samples_BART+noise)
+}
+
+get_R2 <- function(predicted_y, true_y){
+  R2 <- cor(predicted_y, true_y)^2
+  return(R2)
+}
+
+get_RMSE <- function(predicted_y, true_y){
+  RMSE <- sqrt(sum((predicted_y-true_y)^2)/length(true_y))
+  return(RMSE)
+}
+
+#' @param y a matrix of size m * n, m samples for n observations
+#' @param true_y a vector of length n
+#' @param cvg a real number between 0 and 1
+get_Cvg <- function(y, true_y, cvg = 0.95){
+  CI = matrixStats::colQuantiles(y,probs=c(0.5-cvg/2, 0.5+cvg/2))
+  Cvg = sum(true_y >= CI[,1] & true_y <= CI[,2] )/length(true_y)
+  return(Cvg)
+}
+
+corfx <- function(d,theta){
+  rho <- exp(theta[1])        # range
+  nu  <- exp(theta[2])        # smoothness
+  COR <- geoR::matern(d,rho,nu)
+  return(COR)
+}
+```
+
+### Setting up simulation: parameters
+```{r parameters}
+# exp
+exp_name = 'exp1'
+# field: s * s (20, 30*, 40, 50)
+s = 30
+# monitor density: d (0.05, 0.1*, 0.15)
+d = 0.1
+# tau2, range, smoothness
+#   tau2: 1
+my_tau2 = 1
+#   range = k3*s (k3: 0.05, 0.1, 0.15) (normal scale)
+k3 = 0.1
+#   smoothness: -0.3, 0, 0.3 (log scale)
+my_smoothness = 0
+# num. of observations at each location: n (25, 50*, 100, 150)
+n = 50
+# sigma2 = k1 * tau2 (k1: 0.5, 1, 2)
+k1 = 1
+# function
+function_num = 6
+# training rate of all data: rho (0.3, 0.5, 0.7*, 0.9)
+rho = 0.7
+# nskip (not a variable)
+nskip = 60   # use a larger value when doing real modeling
+# ndpost (not a variable)
+ndpost = 40   # use a larger value when doing real modeling
+# ntree (5, 10*, 15)
+ntree = 10
+# power (2*, 4, 6)
+power = 2
+```
+
+### Preparing training and testing datasets
+
+```{r begin_sim}
+set.seed(998)
+my_range = log(k3*s)
+my_sigma2 = k1*my_tau2
+N = ceiling(s * s * d)  # total number of unique locations
+x1 = rnorm(N*n, mean=0, sd=1)
+x2 = rnorm(N*n, mean=0, sd=1)
+if (function_num == 1) y =  x1
+if (function_num == 2) y =  2 * x1
+if (function_num == 3) y =  4 * x1
+if (function_num == 4) y =  x1 + 2 * x2
+if (function_num == 5) y =  x1 * x2
+if (function_num == 6) y =  2 * x1 * x2
+if (function_num == 7) y =  4 * x2 * x2
+
+xco = runif(n = N, min = -s,  max = s)  # x and y axes (on the ground, not latlon)
+yco = runif(n = N, min = -s, max = s)
+xyco = cbind(xco,yco)
+
+distanceMatrix = as.matrix (dist( xyco ))
+correlationMatrix = corfx(distanceMatrix,c(my_range, my_smoothness))
+covarianceMatrix = my_tau2 * correlationMatrix
+w.true = as.vector(MASS::mvrnorm (1, mu=rep(0,N), covarianceMatrix)) # spatial random effects
+mean(w.true)
+# hist(w.true)
+
+# training set
+num_training_locations = ceiling(N * rho)
+xyco_train = xyco[1:num_training_locations,]
+xyco_train_expanded = as.data.frame(cbind(rep(xyco_train[,1], each=n),
+                                          rep(xyco_train[,2], each=n)))
+training_index = 1:nrow(xyco_train_expanded)
+x1_train = x1[training_index]
+x2_train = x2[training_index]
+if (function_num == 6) training_predictors <- data.frame(x1 = x1_train, x2=x2_train,
+                                                         xco = xyco_train_expanded[,1],
+                                                         yco = xyco_train_expanded[,2])
+y_train =  y[training_index] +
+  rep(w.true[1:num_training_locations],each = n) +
+  rnorm(nrow(xyco_train),0,sqrt(my_sigma2))
+length(y_train)
+dim(training_predictors)
+
+# testing set
+xyco_test = xyco[-(1:num_training_locations),]
+xyco_test_expanded = as.data.frame(cbind(rep(xyco_test[,1], each=n),
+                                         rep(xyco_test[,2], each=n)))
+x1_test = x1[-training_index]
+x2_test = x2[-training_index]
+if (function_num == 6) testing_predictors <- data.frame(x1 = x1_test, x2=x2_test,
+                                                        xco = xyco_test_expanded[,1],
+                                                        yco = xyco_test_expanded[,2])
+y_test =  y[-training_index] +
+  rep(w.true[-(1:num_training_locations)],each = n) +
+  rnorm(nrow(xyco_test),0,sqrt(my_sigma2))
+length(y_test)
+dim(testing_predictors)
+```
+
+### Modeling
+
+```{r modeling}
+results_BART <- BART::mc.wbart(x.train = training_predictors,
+                       y.train = y_train,
+                       nskip = nskip,
+                       ndpost = ndpost,
+                       ntree = ntree,
+                       x.test = testing_predictors)
+print(dim(results_BART$sigma))
+print(length(results_BART$sigma))
+names(xyco_train_expanded) <- c('x','y')
+names(xyco_test_expanded) <- c('x','y')
+results_BARTsp <- BART.sp::wbart_sp(mc=TRUE,mc.cores=2,
+                             x_train = training_predictors,
+                             y_train = y_train,
+                             coordinates_train = xyco_train_expanded,
+                             coordinates_system = 'ground',
+                             nskip = nskip,
+                             ndpost = ndpost,
+                             ntree = ntree,
+                             power = power,
+                             x_test= testing_predictors,
+                             coordinates_test = xyco_test_expanded,
+                             tau2_prior_a=3,
+                             tau2_prior_b=1,
+                             tau2_init=0.1,
+                             logrange_init=1.0,
+                             logsmoothness_init=0.0,
+                             logrange_select_sd=0.5, logsmoothness_select_sd=0.5,
+                             sigma2_prior_a=10.0,
+                             sigma2_prior_b=1.0,
+                             logrange_prior_mean = 0.6,
+                             logrange_prior_sd = 0.5,
+                             logsmoothness_prior_mean=0.0,
+                             logsmoothness_prior_sd=0.5)
+print(dim(results_BARTsp$sigma))
+print(length(results_BARTsp$sigma))
+```
+
+### Evaluation
+
+```{r evaluation}
+y_prediction_BART <- results_BART$yhat.test.mean
+y_prediction_BARTsp <- colMeans(results_BARTsp$yhat.test)
+
+(R2_BART = get_R2(y_prediction_BART, y_test))
+(R2_BARTsp = get_R2(y_prediction_BARTsp, y_test))
+(RMSE_BART = get_RMSE(y_prediction_BART, y_test))
+(RMSE_BARTsp = get_RMSE(y_prediction_BARTsp, y_test))
+(Cvg_BART = get_Cvg(add_noise_to_the_predicted_value(results_BART$yhat.test,
+                                                    c(results_BART$sigma[(nskip+1):
+                                                           (nskip+ndpost/2),1],
+                                                      results_BART$sigma[(nskip+1):
+                                                           (nskip+ndpost/2),2])),
+                   y_test))
+(Cvg_BARTsp = get_Cvg(add_noise_to_the_predicted_value(results_BARTsp$yhat.test,
+                                                      results_BARTsp$sigma),
+                     y_test))
+```
+
+### Examining estimated spatial random effects
+
+```{r fig.align="center", fig.width=5, fig.height=4}
+df <- cbind(results_BARTsp$unique_train_locations,
+            w=colMeans(results_BARTsp$unique_w))
+options(repr.plot.width = 1, repr.plot.height = 0.75)
+ggplot(df, aes(x=x, y=y, color=w)) +
+    geom_point(size=3)  + scale_color_gradient2(low="blue", mid="white",
+                     high="red")
+```
+
+We can see some spatial trend in the above figure. The range parameter seems to
+be quite small (where BARTsp is particularly better than the original BART).
+
+### Examining parameter estimations
+
+```{r}
+mean(results_BARTsp$logrange); my_range
+mean(results_BARTsp$logsmoothness); my_smoothness
+mean(results_BARTsp$tau2); my_tau2
+mean(results_BARTsp$sigma^2); my_sigma2
+```
+
+A better estimation could be achieved with larger burn ins and keeps.
+
+# 2. PM$_{2.5}$ example
+
+### Modeling
+Dataset `pm25` (see documentation for this dataset) is shipped with this package.
+```{r}
+data(pm25, package='BART.sp')
+dim(pm25)
+head(pm25)
+locations <- pm25[,c('pm_lon','pm_lat')]
+unique_locations <- unique(locations)
+dim(unique_locations)
+unique_locations$id <- 1:nrow(unique_locations)
+locations <- dplyr::left_join(locations, unique_locations,
+                              sorted=FALSE)
+pm25 <- dplyr::rename(pm25, c("lon"="pm_lon", "lat"="pm_lat"))
+pm25_train <- pm25[locations$id %in% 1:51 ,]
+pm25_test <- pm25[locations$id %in% 52:101 ,]
+
+nskip = 1000
+ndpost = 2000
+ntree = 5
+power = 2
+model <- BART.sp::wbart_sp(mc=TRUE,mc.cores=2,
+                             x_train = pm25_train[,2:ncol(pm25_train)],
+                             y_train = pm25_train$pm25_value,
+                             coordinates_train = pm25_train[,c('lon','lat')],
+                             coordinates_system = 'lonlat',
+                             nskip = nskip,
+                             ndpost = ndpost,
+                             ntree = ntree,
+                             power = power)
+
+names(model)
+dim(model$unique_train_locations)
+dim(model$unique_w)
+```
+
+### prediction with `draw_from_total_distribution=TRUE`
+
+```{r}
+predictions <- predict(model, 
+                      newdata = pm25_test,
+                      newloc = pm25_test[,c('lon','lat')],
+                      draw_from_total_distribution = TRUE
+                      )
+names(predictions)
+sapply(X=predictions,FUN = dim)
+```
+
+### prediction with `draw_from_total_distribution=FALSE` and `block`
+
+```{r}
+predictions2 <- predict(model, 
+                      newdata = pm25_test,
+                      newloc = pm25_test[,c('lon','lat')],
+                      draw_from_total_distribution = FALSE,
+                      block=5
+                      )
+names(predictions2)
+sapply(predictions2, FUN=dim)
+```
+
+Comparing the predictions from `draw_from_total_distribution=TRUE` and `draw_from_total_distribution=FALSE`.
+
+```{r}
+pred_w_1 <- cbind(predictions$unique_test_locations, 
+                  w1=colMeans(predictions$unique_w_test))
+pred_w_2 <- cbind(predictions2$unique_test_locations, 
+                  w2=colMeans(predictions2$unique_w_test))
+pred_w <- dplyr::left_join(pred_w_1,
+                           pred_w_2,
+                           by=c('lon','lat'),
+                           sorted=FALSE)
+
+cor(colMeans(predictions2$yhat.test),colMeans(predictions$yhat.test),)
+cor(colMeans(predictions2$what.test),colMeans(predictions$what.test),)
+cor(pred_w$w1, pred_w$w2)
+```
+
+The estimation of `w` is similar (correlation approximately equals to 0.9).
